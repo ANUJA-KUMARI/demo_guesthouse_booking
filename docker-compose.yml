@@ -1,0 +1,51 @@
+# docker-compose.yml - starts the whole app with ONE command:
+#   docker compose up --build
+# Then open http://localhost:8080
+#
+#   db  (PostgreSQL 16)  <-  api (Node, port 3000 inside)  <-  web (nginx, port 8080 on your PC)
+# Secrets come from the file ".env" next to this file (copy .env.example).
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: guesthouse
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?Set APP_DB_PASSWORD in .env}
+      LOAD_SEED: ${LOAD_SEED:-false}
+    volumes:
+      - pgdata:/var/lib/postgresql/data                     # the data survives restarts
+      - ./db/migrations:/migrations:ro                       # 001..010
+      - ./db/seed:/seed:ro
+      - ./db/docker-init:/docker-entrypoint-initdb.d:ro      # runs 01_migrate.sh on first start
+    healthcheck:                                             # "is the DB ready yet?"
+      test: ["CMD-SHELL", "pg_isready -U postgres -d guesthouse"]
+      interval: 3s
+      retries: 30
+    # No "ports:" = the database is NOT reachable from outside Docker (safer).
+    # To use psql from Windows, add:  ports: ["5433:5432"]
+
+  api:
+    build: ./api
+    depends_on:
+      db:
+        condition: service_healthy                           # wait for migrations to finish
+    environment:
+      DATABASE_URL: postgres://guesthouse_app:${APP_DB_PASSWORD}@db:5432/guesthouse
+      PORT: 3000
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      CORS_ORIGIN: http://localhost:8080
+      COOKIE_SAMESITE: lax
+      COOKIE_SECURE: "false"                                 # true once you serve over https
+      TRUST_PROXY: 1                                         # nginx is in front
+    restart: unless-stopped
+
+  web:
+    build: ./web
+    depends_on: [api]
+    ports:
+      - "8080:80"                                            # http://localhost:8080
+    restart: unless-stopped
+
+volumes:
+  pgdata:
